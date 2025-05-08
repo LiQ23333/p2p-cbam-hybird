@@ -23,6 +23,26 @@ from options.train_options import TrainOptions
 from data import create_dataset
 from models import create_model
 from util.simple_visualizer import SimpleVisualizer
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+
+class EarlyStopping:
+    def __init__(self, patience=15, min_delta=0.001):
+        self.patience = patience
+        self.min_delta = min_delta
+        self.counter = 0
+        self.best_loss = None
+        self.early_stop = False
+        
+    def __call__(self, val_loss):
+        if self.best_loss is None:
+            self.best_loss = val_loss
+        elif val_loss > self.best_loss - self.min_delta:
+            self.counter += 1
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            self.best_loss = val_loss
+            self.counter = 0
 
 if __name__ == '__main__':
     opt = TrainOptions().parse()   # get training options
@@ -35,6 +55,20 @@ if __name__ == '__main__':
     visualizer = SimpleVisualizer(opt)   # create a visualizer that display/save images and plots
     total_iters = 0                # the total number of training iterations
 
+    # 创建学习率调度器
+    scheduler_G = CosineAnnealingWarmRestarts(
+        model.optimizer_G, 
+        T_0=20,  # 每20个epoch重启一次
+        T_mult=2,  # 每次重启后周期翻倍
+        eta_min=opt.lr * 0.01
+    )
+    scheduler_D = CosineAnnealingWarmRestarts(
+        model.optimizer_D,
+        T_0=20,
+        T_mult=2,
+        eta_min=opt.lr * 0.01
+    )
+
     for epoch in range(opt.epoch_count, opt.n_epochs + opt.n_epochs_decay + 1):
         epoch_start_time = time.time()  # timer for entire epoch
         iter_data_time = time.time()    # timer for data loading per iteration
@@ -42,11 +76,15 @@ if __name__ == '__main__':
         visualizer.reset()              # reset the visualizer
         
         # 更新学习率
-        model.update_learning_rate(epoch)
+        if epoch % 5 == 0:  # 每5个epoch更新一次学习率
+            model.update_learning_rate()
+        
+        # 更新损失权重
+        model.update_loss_weights(epoch)
         
         # 更新伪标签
-        if epoch >= 50 and hasattr(dataset, 'update_pseudo_labels'):
-            dataset.update_pseudo_labels(model, epoch)
+        if epoch >= 20:  # 从第20个epoch开始更新伪标签
+            model.update_pseudo_labels(epoch)
         
         for i, data in enumerate(dataset):
             iter_start_time = time.time()  # timer for computation per iteration

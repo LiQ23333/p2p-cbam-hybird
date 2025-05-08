@@ -104,8 +104,7 @@ class SemiSupervisedDataset(BaseDataset):
         return len(self.labeled_paths) + len(self.unlabeled_paths)
 
     def update_pseudo_labels(self, model, epoch):
-        """更新伪标签"""
-        if epoch % 10 != 0:  # 每10个epoch更新一次
+        if epoch % 5 != 0:  # 更频繁地更新伪标签
             return
             
         model.eval()
@@ -115,20 +114,33 @@ class SemiSupervisedDataset(BaseDataset):
                     A_img = Image.open(path).convert('RGB')
                     A = self.transform(A_img).unsqueeze(0).to(model.device)
                     
-                    # 生成预测结果
-                    fake_B = model.netG(A)
+                    # 使用集成方法生成伪标签
+                    predictions = []
+                    for _ in range(3):
+                        fake_B = model.netG(A)
+                        predictions.append(fake_B)
+                    
+                    # 取平均作为最终预测
+                    fake_B = torch.mean(torch.stack(predictions), dim=0)
                     
                     # 计算SSIM
                     ssim = calculate_ssim(A.cpu(), fake_B.cpu())
                     
-                    # 如果SSIM大于阈值，更新伪标签
                     if isinstance(ssim, torch.Tensor):
                         ssim = ssim.item()
                     
-                    if ssim > self.opt.pseudo_threshold:
+                    # 动态调整SSIM阈值
+                    base_threshold = 0.7
+                    epoch_factor = min(epoch / 100, 1.0)  # 限制在0-1之间
+                    threshold = base_threshold + 0.1 * epoch_factor
+                    
+                    if ssim > threshold:
                         self.pseudo_labels[path] = fake_B.cpu().squeeze(0)
                         self.pseudo_ssim[path] = ssim
+                    elif path in self.pseudo_labels:
+                        del self.pseudo_labels[path]
+                        del self.pseudo_ssim[path]
                 except Exception as e:
                     print(f"Error updating pseudo label for {path}: {str(e)}")
                     continue
-        model.train() 
+            model.train() 
